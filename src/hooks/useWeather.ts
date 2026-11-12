@@ -1,90 +1,250 @@
-import { useCallback, useState } from 'react';
-import type { City, WeatherData } from '../types/weather';
+import { useEffect, useReducer, useRef } from 'react';
 import { getWeather, searchCities, WeatherServiceError } from '../services/weatherService';
+import type { City, WeatherData } from '../types/weather';
 
 export type WeatherStatus = 'idle' | 'loading' | 'success' | 'error' | 'empty';
 
-interface UseWeatherResult {
+export interface UseWeatherResult {
   status: WeatherStatus;
   data: WeatherData | null;
   cities: City[];
   error: string | null;
   query: string;
+  canRetry: boolean;
   search: (name: string) => Promise<void>;
   selectCity: (city: City) => Promise<void>;
   retry: () => Promise<void>;
 }
 
-/**
- * Hook de orquestração: busca cidades, seleciona uma e carrega o clima.
- * Expõe uma máquina de estados simples (idle/loading/success/error/empty).
- */
-export function useWeather(): UseWeatherResult {
-  const [status, setStatus] = useState<WeatherStatus>('idle');
-  const [data, setData] = useState<WeatherData | null>(null);
-  const [cities, setCities] = useState<City[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
-  const [lastCity, setLastCity] = useState<City | null>(null);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: search inicia o fluxo na montagem; loadWeather é estável
-  const search = useCallback(async (name: string) => {
-    const trimmed = name.trim();
-    setQuery(trimmed);
-    if (!trimmed) return;
-
-    setStatus('loading');
-    setError(null);
-    setCities([]);
-    try {
-      const results = await searchCities(trimmed);
-      if (results.length === 0) {
-        setStatus('empty');
-        return;
-      }
-      // Seleciona automaticamente a primeira correspondência, mas mantém a
-      // lista para o usuário trocar.
-      setCities(results);
-      await loadWeather(results[0]);
-    } catch (err) {
-      setStatus('error');
-      setError(toMessage(err));
-    }
-  }, []);
-
-  const loadWeather = useCallback(async (city: City) => {
-    setStatus('loading');
-    setError(null);
-    setLastCity(city);
-    try {
-      const weather = await getWeather(city);
-      setData(weather);
-      setStatus('success');
-    } catch (err) {
-      setStatus('error');
-      setError(toMessage(err));
-    }
-  }, []);
-
-  const selectCity = useCallback(
-    async (city: City) => {
-      await loadWeather(city);
-    },
-    [loadWeather],
-  );
-
-  const retry = useCallback(async () => {
-    if (lastCity) {
-      await loadWeather(lastCity);
-    } else if (query) {
-      await search(query);
-    }
-  }, [lastCity, query, loadWeather, search]);
-
-  return { status, data, cities, error, query, search, selectCity, retry };
+interface WeatherState {
+  status: WeatherStatus;
+  data: WeatherData | null;
+  cities: City[];
+  error: string | null;
+  query: string;
+  canRetry: boolean;
 }
 
-function toMessage(err: unknown): string {
-  if (err instanceof WeatherServiceError) return err.message;
-  return 'Algo deu errado. Tente novamente.';
+type WeatherAction =
+  | { type: 'searchStarted'; query: string }
+  | { type: 'searchResolved'; cities: City[] }
+  | { type: 'searchEmpty' }
+  | { type: 'weatherStarted' }
+  | { type: 'weatherResolved'; data: WeatherData }
+  | { type: 'failed'; message: string; canRetry: boolean }
+  | { type: 'retryAvailable' }
+  | { type: 'invalidSearch' };
+
+type LastOperation = { type: 'search'; name: string } | { type: 'weather'; city: City };
+
+const initialState: WeatherState = {
+  status: 'idle',
+  data: null,
+  cities: [],
+  error: null,
+  query: '',
+  canRetry: false,
+};
+
+function weatherReducer(state: WeatherState, action: WeatherAction): WeatherState {
+  switch (action.type) {
+    case 'searchStarted':
+      return {
+        status: 'loading',
+        data: null,
+        cities: [],
+        error: null,
+        query: action.query,
+        canRetry: false,
+      };
+    case 'searchResolved':
+      return { ...state, cities: action.cities };
+    case 'searchEmpty':
+      return { ...state, status: 'empty', data: null, cities: [], error: null, canRetry: false };
+    case 'weatherStarted':
+      return { ...state, status: 'loading', data: null, error: null, canRetry: false };
+    case 'weatherResolved':
+      return { ...state, status: 'success', data: action.data, error: null, canRetry: false };
+    case 'failed':
+      return {
+        ...state,
+        status: 'error',
+        data: null,
+        error: action.message,
+        canRetry: action.canRetry,
+      };
+    case 'retryAvailable':
+      return { ...state, canRetry: true };
+    case 'invalidSearch':
+      return {
+        ...state,
+        status: 'idle',
+        data: null,
+        cities: [],
+        error: 'Informe o nome de uma cidade.',
+        query: '',
+        canRetry: false,
+      };
+  }
+}
+
+interface ErrorDetails {
+  message: string;
+  retryable: boolean;
+  retryAfterMs: number | null;
+}
+
+function getErrorDetails(error: unknown): ErrorDetails {
+  if (!(error instanceof WeatherServiceError)) {
+    return {
+      message: 'Não foi possível processar os dados de clima.',
+      retryable: false,
+      retryAfterMs: null,
+    };
+  }
+
+  if (error.statusCode === null) {
+    return { message: error.message, retryable: true, retryAfterMs: null };
+  }
+
+  if (error.statusCode === 429) {
+    return {
+      message:
+        error.retryAfterMs !== null && error.retryAfterMs > 0
+          ? `Limite de consultas atingido. Tente novamente em ${Math.ceil(error.retryAfterMs / 1000)} s.`
+          : error.message,
+      retryable: true,
+      retryAfterMs: error.retryAfterMs,
+    };
+  }
+
+  if (error.statusCode >= 500) {
+    return { message: error.message, retryable: true, retryAfterMs: null };
+  }
+
+  if (error.statusCode >= 400) {
+    return { message: error.message, retryable: false, retryAfterMs: null };
+  }
+
+  return {
+    message: 'Não foi possível processar os dados de clima.',
+    retryable: false,
+    retryAfterMs: null,
+  };
+}
+
+export default function useWeather(): UseWeatherResult {
+  const [state, dispatch] = useReducer(weatherReducer, initialState);
+  const operationId = useRef(0);
+  const lastOperation = useRef<LastOperation | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearRetryTimer() {
+    if (retryTimer.current !== null) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (retryTimer.current !== null) {
+        clearTimeout(retryTimer.current);
+      }
+    };
+  }, []);
+
+  function handleFailure(error: unknown) {
+    const details = getErrorDetails(error);
+    const retryDelay = details.retryAfterMs ?? 0;
+    dispatch({
+      type: 'failed',
+      message: details.message,
+      canRetry: details.retryable && retryDelay <= 0,
+    });
+
+    if (details.retryable && retryDelay > 0) {
+      retryTimer.current = setTimeout(() => {
+        retryTimer.current = null;
+        dispatch({ type: 'retryAvailable' });
+      }, retryDelay);
+    }
+  }
+
+  async function loadWeather(city: City): Promise<void> {
+    clearRetryTimer();
+    const currentOperationId = ++operationId.current;
+    lastOperation.current = { type: 'weather', city };
+    dispatch({ type: 'weatherStarted' });
+
+    try {
+      const data = await getWeather(city);
+      if (currentOperationId !== operationId.current) {
+        return;
+      }
+      dispatch({ type: 'weatherResolved', data });
+    } catch (error) {
+      if (currentOperationId !== operationId.current) {
+        return;
+      }
+      handleFailure(error);
+    }
+  }
+
+  async function search(name: string): Promise<void> {
+    const normalizedName = name.trim();
+    if (normalizedName.length === 0) {
+      clearRetryTimer();
+      operationId.current += 1;
+      lastOperation.current = null;
+      dispatch({ type: 'invalidSearch' });
+      return;
+    }
+
+    clearRetryTimer();
+    const currentOperationId = ++operationId.current;
+    lastOperation.current = { type: 'search', name: normalizedName };
+    dispatch({ type: 'searchStarted', query: normalizedName });
+
+    try {
+      const cities = await searchCities(normalizedName);
+      if (currentOperationId !== operationId.current) {
+        return;
+      }
+      if (cities.length === 0) {
+        lastOperation.current = null;
+        dispatch({ type: 'searchEmpty' });
+        return;
+      }
+
+      dispatch({ type: 'searchResolved', cities });
+      await loadWeather(cities[0]);
+    } catch (error) {
+      if (currentOperationId !== operationId.current) {
+        return;
+      }
+      handleFailure(error);
+    }
+  }
+
+  async function retry(): Promise<void> {
+    if (!state.canRetry || lastOperation.current === null) {
+      return;
+    }
+
+    const operation = lastOperation.current;
+    if (operation.type === 'search') {
+      await search(operation.name);
+      return;
+    }
+
+    await loadWeather(operation.city);
+  }
+
+  return {
+    ...state,
+    search,
+    selectCity: loadWeather,
+    retry,
+  };
 }

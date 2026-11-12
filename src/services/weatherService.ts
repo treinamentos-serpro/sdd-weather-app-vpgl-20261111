@@ -1,139 +1,271 @@
+import { getWeatherConditionLabel } from '../lib/weatherCodes';
 import type { City, CurrentWeather, ForecastDay, WeatherData } from '../types/weather';
 
 const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const REQUEST_TIMEOUT_MS = 10_000;
 
-/** Erro tipado da camada de dados, com mensagem amigável ao usuário. */
-export class WeatherServiceError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'WeatherServiceError';
-  }
-}
-
-/** Faz um fetch com timeout via AbortController. */
-async function fetchWithTimeout(url: string): Promise<Response> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new WeatherServiceError('A requisição demorou demais. Tente novamente.');
-    }
-    throw new WeatherServiceError('Falha de rede. Verifique sua conexão.');
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 interface GeocodingResult {
-  id: number;
+  id: number | string;
   name: string;
-  country?: string;
-  admin1?: string;
   latitude: number;
   longitude: number;
+  admin1?: string | null;
+  country?: string | null;
 }
 
-/**
- * Busca cidades por nome (geocoding). Retorna lista vazia quando não há
- * resultados — o estado "vazio" é tratado pela camada de UI.
- */
-export async function searchCities(name: string): Promise<City[]> {
-  const query = name.trim();
-  if (!query) return [];
+export class WeatherServiceError extends Error {
+  readonly statusCode: number | null;
+  readonly retryAfterMs: number | null;
 
-  const url = `${GEOCODING_URL}?name=${encodeURIComponent(query)}&count=5&language=pt&format=json`;
-  const res = await fetchWithTimeout(url);
-  if (!res.ok) {
-    throw new WeatherServiceError('Não foi possível buscar a cidade. Tente novamente.');
+  constructor(
+    statusCode: number | null,
+    message = statusCode === null
+      ? 'Open-Meteo request failed.'
+      : `Open-Meteo request failed with status ${statusCode}.`,
+    retryAfterMs: number | null = null,
+  ) {
+    super(message);
+    this.name = 'WeatherServiceError';
+    this.statusCode = statusCode;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function parseRetryAfter(value: string | null): number | null {
+  if (value === null) {
+    return null;
   }
 
-  const data = (await res.json()) as { results?: GeocodingResult[] };
-  if (!data.results) return [];
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
 
-  return data.results.map((r) => ({
-    id: r.id,
-    name: r.name,
-    country: r.country ?? '',
-    admin1: r.admin1,
-    latitude: r.latitude,
-    longitude: r.longitude,
+  const retryAt = Date.parse(value);
+  return Number.isNaN(retryAt) ? null : Math.max(0, retryAt - Date.now());
+}
+
+function createHttpError(response: Response): WeatherServiceError {
+  if (response.status === 429) {
+    const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'));
+    return new WeatherServiceError(
+      response.status,
+      'Limite de consultas atingido. Tente novamente em instantes.',
+      retryAfterMs,
+    );
+  }
+
+  if (response.status >= 500) {
+    return new WeatherServiceError(
+      response.status,
+      'Serviço de clima indisponível. Tente novamente.',
+    );
+  }
+
+  return new WeatherServiceError(
+    response.status,
+    'A solicitação de clima não pôde ser processada.',
+  );
+}
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } catch (error) {
+    const isAbortError =
+      typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+
+    if (isAbortError) {
+      throw new WeatherServiceError(null, 'A requisição demorou demais.');
+    }
+
+    throw new WeatherServiceError(null, 'Falha de rede.');
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nullableString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+  return trimmedValue.length > 0 ? trimmedValue : null;
+}
+
+function validTimeZone(value: unknown): string | null {
+  const timezone = nullableString(value);
+  if (timezone === null) {
+    return null;
+  }
+
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
+    return timezone;
+  } catch {
+    return null;
+  }
+}
+
+function isGeocodingResult(value: unknown): value is GeocodingResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    (typeof value.id === 'number' || typeof value.id === 'string') &&
+    typeof value.name === 'string' &&
+    value.name.trim().length > 0 &&
+    typeof value.latitude === 'number' &&
+    Number.isFinite(value.latitude) &&
+    typeof value.longitude === 'number' &&
+    Number.isFinite(value.longitude) &&
+    (value.admin1 === undefined || value.admin1 === null || typeof value.admin1 === 'string') &&
+    (value.country === undefined || value.country === null || typeof value.country === 'string')
+  );
+}
+
+function isValidLocalDate(value: unknown): value is string {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+function nullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function numberAt(values: unknown, index: number): number | null {
+  return Array.isArray(values) ? nullableNumber(values[index]) : null;
+}
+
+function availabilityForDay(
+  weatherCode: number | null,
+  minTemperatureC: number | null,
+  maxTemperatureC: number | null,
+): ForecastDay['availability'] {
+  const presentFields = [weatherCode, minTemperatureC, maxTemperatureC].filter(
+    (value) => value !== null,
+  ).length;
+
+  if (presentFields === 3) {
+    return 'complete';
+  }
+  return presentFields === 0 ? 'unavailable' : 'partial';
+}
+
+export async function searchCities(name: string): Promise<City[]> {
+  const normalizedName = name.trim();
+  if (normalizedName.length === 0) {
+    return [];
+  }
+
+  const url = `${GEOCODING_URL}?name=${encodeURIComponent(normalizedName)}&language=pt&format=json`;
+  const response = await fetchWithTimeout(url);
+
+  if (!response.ok) {
+    throw createHttpError(response);
+  }
+
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || !Array.isArray(payload.results)) {
+    return [];
+  }
+
+  return payload.results.filter(isGeocodingResult).map((result) => ({
+    id: String(result.id),
+    name: result.name.trim(),
+    adminRegion: nullableString(result.admin1),
+    country: nullableString(result.country),
+    latitude: result.latitude,
+    longitude: result.longitude,
   }));
 }
 
-interface ForecastResponse {
-  current?: {
-    time: string;
-    temperature_2m: number;
-    relative_humidity_2m: number;
-    wind_speed_10m: number;
-    surface_pressure: number;
-    precipitation: number;
-    weather_code: number;
-  };
-  daily?: {
-    time: string[];
-    weather_code: number[];
-    temperature_2m_max: number[];
-    temperature_2m_min: number[];
-    precipitation_probability_max: (number | null)[];
-  };
-}
-
-function mapCurrent(c: NonNullable<ForecastResponse['current']>): CurrentWeather {
-  return {
-    time: c.time,
-    temperature: c.temperature_2m,
-    humidity: c.relative_humidity_2m,
-    windSpeed: c.wind_speed_10m,
-    pressure: c.surface_pressure,
-    precipitation: c.precipitation,
-    weatherCode: c.weather_code,
-  };
-}
-
-function mapForecast(d: NonNullable<ForecastResponse['daily']>): ForecastDay[] {
-  return d.time.map((date, i) => ({
-    date,
-    weatherCode: d.weather_code[i],
-    max: d.temperature_2m_max[i],
-    min: d.temperature_2m_min[i],
-    precipitationProbability: d.precipitation_probability_max[i] ?? 0,
-  }));
-}
-
-/**
- * Busca o clima atual e a previsão de 5 dias para uma cidade.
- * Temperaturas retornam em Celsius (conversão fica na UI).
- */
 export async function getWeather(city: City): Promise<WeatherData> {
   const params = new URLSearchParams({
     latitude: String(city.latitude),
     longitude: String(city.longitude),
-    current:
-      'temperature_2m,relative_humidity_2m,wind_speed_10m,surface_pressure,precipitation,weather_code',
-    daily:
-      'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
-    forecast_days: '5',
+    current: 'temperature_2m,weather_code',
+    daily: 'weather_code,temperature_2m_max,temperature_2m_min',
     timezone: 'auto',
+    forecast_days: '5',
+    temperature_unit: 'celsius',
+  });
+  const response = await fetchWithTimeout(`${FORECAST_URL}?${params.toString()}`);
+
+  if (!response.ok) {
+    throw createHttpError(response);
+  }
+
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || !isRecord(payload.current) || !isRecord(payload.daily)) {
+    throw new WeatherServiceError(
+      response.status,
+      'Open-Meteo forecast response is missing current or daily data.',
+    );
+  }
+
+  const currentPayload = payload.current;
+  const dailyPayload = payload.daily;
+  const dailyDates = Array.isArray(dailyPayload.time) ? dailyPayload.time.slice(0, 5) : [];
+  if (dailyDates.length !== 5 || !dailyDates.every(isValidLocalDate)) {
+    throw new WeatherServiceError(
+      response.status,
+      'Open-Meteo forecast response must contain five valid daily dates.',
+    );
+  }
+
+  const timezone = validTimeZone(payload.timezone);
+  const currentCode = nullableNumber(currentPayload.weather_code);
+  const current: CurrentWeather = {
+    temperatureC: nullableNumber(currentPayload.temperature_2m),
+    weatherCode: currentCode,
+    conditionLabelPtBR: getWeatherConditionLabel(currentCode),
+    observedAt: timezone ? nullableString(currentPayload.time) : null,
+  };
+
+  const forecast: ForecastDay[] = dailyDates.map((dateLocal, index) => {
+    const weatherCode = nullableNumber(numberAt(dailyPayload.weather_code, index));
+    const minTemperatureC = nullableNumber(numberAt(dailyPayload.temperature_2m_min, index));
+    const maxTemperatureC = nullableNumber(numberAt(dailyPayload.temperature_2m_max, index));
+    const isTimezoneAvailable = timezone !== null;
+
+    return {
+      dateLocal,
+      weatherCode: isTimezoneAvailable ? weatherCode : null,
+      conditionLabelPtBR: isTimezoneAvailable ? getWeatherConditionLabel(weatherCode) : null,
+      minTemperatureC: isTimezoneAvailable ? minTemperatureC : null,
+      maxTemperatureC: isTimezoneAvailable ? maxTemperatureC : null,
+      availability: isTimezoneAvailable
+        ? availabilityForDay(weatherCode, minTemperatureC, maxTemperatureC)
+        : 'unavailable',
+    };
   });
 
-  const res = await fetchWithTimeout(`${FORECAST_URL}?${params.toString()}`);
-  if (!res.ok) {
-    throw new WeatherServiceError('Não foi possível carregar o clima. Tente novamente.');
-  }
-
-  const data = (await res.json()) as ForecastResponse;
-  if (!data.current || !data.daily) {
-    throw new WeatherServiceError('Resposta de clima incompleta. Tente novamente.');
-  }
-
-  return {
-    city,
-    current: mapCurrent(data.current),
-    forecast: mapForecast(data.daily),
-  };
+  return { city, timezone, current, forecast };
 }

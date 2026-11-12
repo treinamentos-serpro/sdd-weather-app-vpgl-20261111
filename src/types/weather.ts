@@ -1,47 +1,57 @@
-/**
- * Contratos de domínio compartilhados do Weather App.
- *
- * Decisão de arquitetura: as temperaturas são sempre armazenadas em Celsius
- * internamente e convertidas apenas na camada de apresentação. Assim, a troca
- * de unidade (C/F) nunca dispara um novo request.
- */
-
 export type Unit = 'celsius' | 'fahrenheit';
 
-/** Resultado da API de geocoding (uma cidade). */
 export interface City {
-  id: number;
+  id: string;
   name: string;
-  country: string;
-  /** Estado/região, quando disponível (ajuda a desambiguar homônimos). */
-  admin1?: string;
+  adminRegion: string | null;
+  country: string | null;
   latitude: number;
   longitude: number;
 }
 
-/** Condições atuais. Temperatura sempre em °C. */
 export interface CurrentWeather {
-  temperature: number;
-  weatherCode: number;
-  humidity: number;
-  windSpeed: number;
-  pressure: number;
-  precipitation: number;
-  time: string;
+  temperatureC: number | null;
+  weatherCode: number | null;
+  conditionLabelPtBR: string | null;
+  observedAt: string | null;
 }
 
-/** Um dia da previsão. Temperaturas sempre em °C. */
+export type ForecastAvailability = 'complete' | 'partial' | 'unavailable';
+
 export interface ForecastDay {
-  date: string;
-  min: number;
-  max: number;
-  weatherCode: number;
-  precipitationProbability: number;
+  dateLocal: string;
+  weatherCode: number | null;
+  conditionLabelPtBR: string | null;
+  minTemperatureC: number | null;
+  maxTemperatureC: number | null;
+  availability: ForecastAvailability;
 }
 
-/** Agregado entregue à UI: cidade + clima atual + 5 dias de previsão. */
 export interface WeatherData {
   city: City;
+  timezone: string | null;
   current: CurrentWeather;
   forecast: ForecastDay[];
+}
+
+export type QueryState<T> =
+  | { status: 'idle'; data: null; error: null }
+  | { status: 'loading'; data: null; error: null }
+  | { status: 'success'; data: T; error: null }
+  | { status: 'empty'; data: null; error: null }
+  | { status: 'error'; data: null; error: AppError };
+
+export type AppErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response';
+
+export interface AppError {
+  kind: AppErrorKind;
+  message: string;
+  httpStatus?: number;
+  retryable: boolean;
+  retryAfterMs?: number;
+}
+
+export interface WeatherService {
+  searchLocations(query: string, signal: AbortSignal): Promise<City[]>;
+  getWeather(city: City, signal: AbortSignal): Promise<WeatherData>;
 }
