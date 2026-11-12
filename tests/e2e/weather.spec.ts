@@ -1,76 +1,162 @@
-import { test, expect, type Page } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
-const geocoding = {
-  results: [
-    {
-      id: 1,
-      name: 'Seattle',
-      country: 'Estados Unidos',
-      admin1: 'Washington',
-      latitude: 47.6,
-      longitude: -122.33,
-    },
-  ],
+const cityResult = {
+  id: 3448439,
+  name: 'São Paulo',
+  latitude: -23.55,
+  longitude: -46.63,
+  admin1: 'São Paulo',
+  country: 'Brasil',
 };
 
-const forecast = {
-  current: {
-    time: '2026-06-16T12:00',
-    temperature_2m: 0,
-    relative_humidity_2m: 80,
-    wind_speed_10m: 10,
-    surface_pressure: 1015,
-    precipitation: 0,
-    weather_code: 3,
-  },
-  daily: {
-    time: ['2026-06-16', '2026-06-17', '2026-06-18', '2026-06-19', '2026-06-20'],
-    weather_code: [3, 61, 80, 1, 0],
-    temperature_2m_max: [20, 19, 22, 24, 25],
-    temperature_2m_min: [12, 11, 13, 14, 15],
-    precipitation_probability_max: [20, 90, 70, 10, 0],
-  },
-};
-
-async function mockApis(page: Page) {
-  await page.route('**/geocoding-api.open-meteo.com/**', (route) =>
-    route.fulfill({ json: geocoding }),
-  );
-  await page.route('**/api.open-meteo.com/**', (route) => route.fulfill({ json: forecast }));
+interface MockRequestCounts {
+  geocoding: number;
+  forecast: number;
 }
 
-test('fluxo completo: buscar → clima atual → previsão → trocar unidade', async ({ page }) => {
-  await mockApis(page);
+async function blockExternalFonts(page: Page) {
+  await page.route('https://fonts.googleapis.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/css', body: '' }),
+  );
+  await page.route('https://fonts.gstatic.com/**', (route) =>
+    route.fulfill({ status: 200, body: '' }),
+  );
+}
+
+async function mockWeatherApis(
+  page: Page,
+  currentTemperature = 0,
+  geocodingBody: Record<string, unknown> = { results: [cityResult] },
+  dailyBody: Record<string, unknown> = {
+    time: ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'],
+    weather_code: [0, 1, 2, 3, 61],
+    temperature_2m_max: [10, 11, 12, 13, 14],
+    temperature_2m_min: [1, 2, 3, 4, 5],
+  },
+): Promise<MockRequestCounts> {
+  const requests = { geocoding: 0, forecast: 0 };
+
+  await page.route('**/geocoding-api.open-meteo.com/v1/search**', async (route) => {
+    requests.geocoding += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(geocodingBody),
+    });
+  });
+
+  await page.route('**/api.open-meteo.com/v1/forecast**', async (route) => {
+    requests.forecast += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        timezone: 'America/Sao_Paulo',
+        current: {
+          time: '2026-11-11T09:00',
+          temperature_2m: currentTemperature,
+          weather_code: 0,
+        },
+        daily: dailyBody,
+      }),
+    });
+  });
+
+  return requests;
+}
+
+test('busca uma cidade, mostra a previsão e converte a temperatura para Fahrenheit', async ({
+  page,
+}) => {
+  const requests = await mockWeatherApis(page);
+  await blockExternalFonts(page);
+
   await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
+  await page.getByRole('button', { name: 'Buscar' }).click();
 
-  await page.getByLabel(/buscar cidade/i).fill('Seattle');
-  await page.getByRole('button', { name: /buscar/i }).click();
+  await expect(page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' })).toBeVisible();
+  expect(requests.forecast).toBe(0);
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
 
-  await expect(page.getByRole('heading', { name: 'Seattle' })).toBeVisible();
-  await expect(page.getByRole('region', { name: /previsão de 5 dias/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Previsão de 5 dias' })).toBeVisible();
+  await expect(page.getByText('0.0°C', { exact: true })).toBeVisible();
+  expect(requests.geocoding).toBe(1);
+  expect(requests.forecast).toBe(1);
 
-  // 0°C exibido; após trocar para °F deve virar 32°.
-  await expect(page.getByText('0°').first()).toBeVisible();
-  await page.getByRole('button', { name: '°F' }).click();
-  await expect(page.getByText('32°').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Fahrenheit' }).click();
+
+  await expect(page.getByText('32.0°F')).toBeVisible();
+  expect(requests.forecast).toBe(1);
 });
 
-test('estado vazio quando a cidade não existe', async ({ page }) => {
-  await page.route('**/geocoding-api.open-meteo.com/**', (route) => route.fulfill({ json: {} }));
+test('mostra estado vazio quando geocoding retorna results vazio', async ({ page }) => {
+  const requests = await mockWeatherApis(page, 0, { results: [] });
+  await blockExternalFonts(page);
+
   await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Cidade' }).fill('Cidade sem resultados');
+  await page.getByRole('button', { name: 'Buscar' }).click();
 
-  await page.getByLabel(/buscar cidade/i).fill('xyzxyz');
-  await page.getByRole('button', { name: /buscar/i }).click();
-
-  await expect(page.getByText(/nenhuma cidade encontrada/i)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Nenhuma cidade encontrada' })).toBeVisible();
+  expect(requests.geocoding).toBe(1);
+  expect(requests.forecast).toBe(0);
 });
 
-test('viewport mobile renderiza o fluxo principal', async ({ page }) => {
-  await mockApis(page);
+test('exibe forecast parcial sem valores inválidos ou inventados', async ({ page }) => {
+  const requests = await mockWeatherApis(
+    page,
+    18.2,
+    { results: [cityResult] },
+    {
+      time: ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'],
+      weather_code: [0],
+      temperature_2m_max: [10],
+      temperature_2m_min: [],
+    },
+  );
+  await blockExternalFonts(page);
+
+  await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
+  await page.getByRole('button', { name: 'Buscar' }).click();
+
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
+
+  await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Previsão de 5 dias' })).toBeVisible();
+  await expect(page.getByRole('article')).toHaveCount(5);
+  await expect(page.getByText('10.0°C')).toBeVisible();
+  await expect(page.getByText('Condição indisponível').first()).toBeVisible();
+  await expect(page.getByText('—').first()).toBeVisible();
+  await expect(page.getByText(/NaN|undefined|null/)).toHaveCount(0);
+  expect(requests.geocoding).toBe(1);
+  expect(requests.forecast).toBe(1);
+});
+
+test('renderiza o clima corretamente no viewport mobile 375x812', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto('/');
+  const requests = await mockWeatherApis(page, 18.2);
+  await blockExternalFonts(page);
 
-  await page.getByLabel(/buscar cidade/i).fill('Seattle');
-  await page.getByRole('button', { name: /buscar/i }).click();
-  await expect(page.getByRole('heading', { name: 'Seattle' })).toBeVisible();
+  await page.goto('/');
+  await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
+  await page.getByRole('button', { name: 'Buscar' }).click();
+
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
+
+  await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
+  await expect(page.getByText('18.2°C')).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'São Paulo', exact: true }).getByText('Céu limpo'),
+  ).toBeVisible();
+  expect(requests.geocoding).toBe(1);
+  expect(requests.forecast).toBe(1);
+
+  const dimensions = await page.evaluate(() => ({
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
 });
