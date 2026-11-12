@@ -192,8 +192,14 @@ export async function searchCities(name: string): Promise<City[]> {
   }
 
   const payload: unknown = await response.json();
-  if (!isRecord(payload) || !Array.isArray(payload.results)) {
+  if (!isRecord(payload)) {
+    throw new WeatherServiceError(response.status, 'Resposta de busca inválida.');
+  }
+  if (payload.results === undefined) {
     return [];
+  }
+  if (!Array.isArray(payload.results)) {
+    throw new WeatherServiceError(response.status, 'Resposta de busca inválida.');
   }
 
   return payload.results.filter(isGeocodingResult).map((result) => ({
