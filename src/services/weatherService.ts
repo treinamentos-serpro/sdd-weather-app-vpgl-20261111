@@ -155,6 +155,23 @@ function isValidLocalDate(value: unknown): value is string {
   );
 }
 
+function addDays(dateLocal: string, days: number): string {
+  const date = new Date(`${dateLocal}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function localDateInTimeZone(timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const dateParts = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${dateParts.year}-${dateParts.month}-${dateParts.day}`;
+}
+
 function nullableNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -238,15 +255,31 @@ export async function getWeather(city: City): Promise<WeatherData> {
 
   const currentPayload = payload.current;
   const dailyPayload = payload.daily;
-  const dailyDates = Array.isArray(dailyPayload.time) ? dailyPayload.time.slice(0, 5) : [];
-  if (dailyDates.length !== 5 || !dailyDates.every(isValidLocalDate)) {
+  const dailyDates: unknown[] = Array.isArray(dailyPayload.time) ? dailyPayload.time : [];
+  const timezone = validTimeZone(payload.timezone);
+  const currentDate = nullableString(currentPayload.time)?.slice(0, 10);
+  const firstDailyDate = dailyDates.find(isValidLocalDate);
+  const startDate = isValidLocalDate(currentDate)
+    ? currentDate
+    : timezone
+      ? localDateInTimeZone(timezone)
+      : firstDailyDate;
+
+  if (startDate === undefined) {
     throw new WeatherServiceError(
       response.status,
-      'Open-Meteo forecast response must contain five valid daily dates.',
+      'Open-Meteo forecast response must contain a valid daily date.',
     );
   }
 
-  const timezone = validTimeZone(payload.timezone);
+  const forecastDates = Array.from({ length: 5 }, (_, index) => addDays(startDate, index));
+  const dailyDateIndexes = new Map<string, number>();
+  dailyDates.forEach((date, index) => {
+    if (isValidLocalDate(date) && !dailyDateIndexes.has(date)) {
+      dailyDateIndexes.set(date, index);
+    }
+  });
+
   const currentCode = nullableNumber(currentPayload.weather_code);
   const current: CurrentWeather = {
     temperatureC: nullableNumber(currentPayload.temperature_2m),
@@ -255,10 +288,14 @@ export async function getWeather(city: City): Promise<WeatherData> {
     observedAt: timezone ? nullableString(currentPayload.time) : null,
   };
 
-  const forecast: ForecastDay[] = dailyDates.map((dateLocal, index) => {
-    const weatherCode = nullableNumber(numberAt(dailyPayload.weather_code, index));
-    const minTemperatureC = nullableNumber(numberAt(dailyPayload.temperature_2m_min, index));
-    const maxTemperatureC = nullableNumber(numberAt(dailyPayload.temperature_2m_max, index));
+  const forecast: ForecastDay[] = forecastDates.map((dateLocal) => {
+    const index = dailyDateIndexes.get(dateLocal);
+    const weatherCode =
+      index === undefined ? null : nullableNumber(numberAt(dailyPayload.weather_code, index));
+    const minTemperatureC =
+      index === undefined ? null : nullableNumber(numberAt(dailyPayload.temperature_2m_min, index));
+    const maxTemperatureC =
+      index === undefined ? null : nullableNumber(numberAt(dailyPayload.temperature_2m_max, index));
     const isTimezoneAvailable = timezone !== null;
 
     return {

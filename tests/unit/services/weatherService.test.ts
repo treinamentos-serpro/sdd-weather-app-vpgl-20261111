@@ -321,6 +321,46 @@ describe('searchCities', () => {
     expect(weather.forecast[1].availability).toBe('unavailable');
   });
 
+  it('preserva clima atual e completa datas ausentes em respostas diárias parciais', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            timezone: 'America/Sao_Paulo',
+            current: currentData,
+            daily: {
+              time: ['2026-11-11', '2026-11-13'],
+              weather_code: [1, 61],
+              temperature_2m_max: [23.1, 19.2],
+              temperature_2m_min: [16, 14.8],
+            },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const weather = await getWeather(city);
+
+    expect(weather.current.temperatureC).toBe(18.2);
+    expect(weather.forecast).toHaveLength(5);
+    expect(weather.forecast[0]).toMatchObject({ dateLocal: '2026-11-11', availability: 'complete' });
+    expect(weather.forecast[1]).toMatchObject({
+      dateLocal: '2026-11-12',
+      availability: 'unavailable',
+      weatherCode: null,
+    });
+    expect(weather.forecast[2]).toMatchObject({
+      dateLocal: '2026-11-13',
+      availability: 'complete',
+      weatherCode: 61,
+      minTemperatureC: 14.8,
+      maxTemperatureC: 19.2,
+    });
+    expect(weather.forecast.slice(3).every((day) => day.availability === 'unavailable')).toBe(true);
+  });
+
   it('normaliza current parcial e invalida forecast sem timezone válido', async () => {
     vi.stubGlobal(
       'fetch',
