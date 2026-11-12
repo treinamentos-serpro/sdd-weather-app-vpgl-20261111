@@ -140,7 +140,9 @@ test('renderiza o clima corretamente no viewport mobile 375x812', async ({ page 
 
   await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
   await expect(page.getByText('18.2°C')).toBeVisible();
-  await expect(page.getByText('Céu limpo')).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'São Paulo', exact: true }).getByText('Céu limpo'),
+  ).toBeVisible();
   expect(requests.geocoding).toBe(1);
   expect(requests.forecast).toBe(1);
 
