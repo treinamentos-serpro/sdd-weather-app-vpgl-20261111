@@ -81,7 +81,7 @@ test('busca uma cidade, mostra a previsão e converte a temperatura para Fahrenh
 
   await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Previsão de 5 dias' })).toBeVisible();
-  await expect(page.getByText('0.0°C')).toBeVisible();
+  await expect(page.getByText('0.0°C', { exact: true })).toBeVisible();
   expect(requests.geocoding).toBe(1);
   expect(requests.forecast).toBe(1);
 
