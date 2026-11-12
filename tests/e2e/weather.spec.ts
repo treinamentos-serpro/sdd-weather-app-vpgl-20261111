@@ -75,6 +75,10 @@ test('busca uma cidade, mostra a previsão e converte a temperatura para Fahrenh
   await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
   await page.getByRole('button', { name: 'Buscar' }).click();
 
+  await expect(page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' })).toBeVisible();
+  expect(requests.forecast).toBe(0);
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
+
   await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Previsão de 5 dias' })).toBeVisible();
   await expect(page.getByText('0.0°C')).toBeVisible();
@@ -118,6 +122,8 @@ test('exibe forecast parcial sem valores inválidos ou inventados', async ({ pag
   await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
   await page.getByRole('button', { name: 'Buscar' }).click();
 
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
+
   await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Previsão de 5 dias' })).toBeVisible();
   await expect(page.getByRole('article')).toHaveCount(5);
@@ -137,6 +143,8 @@ test('renderiza o clima corretamente no viewport mobile 375x812', async ({ page 
   await page.goto('/');
   await page.getByRole('searchbox', { name: 'Cidade' }).fill('São Paulo');
   await page.getByRole('button', { name: 'Buscar' }).click();
+
+  await page.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }).click();
 
   await expect(page.getByRole('heading', { name: 'São Paulo' })).toBeVisible();
   await expect(page.getByText('18.2°C')).toBeVisible();

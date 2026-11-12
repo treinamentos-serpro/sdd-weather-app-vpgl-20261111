@@ -73,7 +73,7 @@ describe('Weather App', () => {
     expect(mockedGetWeather).not.toHaveBeenCalled();
   });
 
-  it('mostra o clima retornado pelo hook e deriva Fahrenheit sem nova busca', async () => {
+  it('exibe resultados para seleção e deriva Fahrenheit sem nova busca', async () => {
     const user = userEvent.setup();
     mockedSearchCities.mockResolvedValue([city]);
     mockedGetWeather.mockResolvedValue(weatherData);
@@ -81,6 +81,12 @@ describe('Weather App', () => {
 
     await user.type(screen.getByRole('searchbox', { name: 'Cidade' }), 'São Paulo');
     await user.click(screen.getByRole('button', { name: 'Buscar' }));
+
+    expect(await screen.findByRole('heading', { name: 'Selecione uma cidade' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' })).toBeTruthy();
+    expect(mockedGetWeather).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'São Paulo, São Paulo, Brasil' }));
 
     const cityHeading = await screen.findByRole('heading', { name: 'São Paulo' });
     expect(cityHeading).toBeTruthy();
@@ -115,6 +121,7 @@ describe('Weather App', () => {
 
     await user.type(screen.getByRole('searchbox', { name: 'Cidade' }), 'São Paulo');
     await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(await screen.findByRole('button', { name: 'São Paulo, São Paulo, Brasil' }));
     expect(await screen.findByRole('alert')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Tentar novamente' }));
@@ -131,6 +138,7 @@ describe('Weather App', () => {
 
     await user.type(screen.getByRole('searchbox', { name: 'Cidade' }), 'São Paulo');
     await user.click(screen.getByRole('button', { name: 'Buscar' }));
+    await user.click(await screen.findByRole('button', { name: 'São Paulo, São Paulo, Brasil' }));
 
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Tentar novamente' })).toBeNull();

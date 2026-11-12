@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import CurrentWeather from './components/CurrentWeather';
 import ForecastList from './components/ForecastList';
+import LocationResults from './components/LocationResults';
 import SearchBar from './components/SearchBar';
 import EmptyState from './components/states/EmptyState';
 import ErrorState from './components/states/ErrorState';
@@ -15,7 +16,11 @@ export default function App() {
   const resultHeadingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
-    if (weather.status === 'success' || weather.status === 'empty') {
+    if (
+      weather.status === 'selecting' ||
+      weather.status === 'success' ||
+      weather.status === 'empty'
+    ) {
       resultHeadingRef.current?.focus();
     }
   }, [weather.status]);
@@ -52,6 +57,14 @@ export default function App() {
         )}
 
         {weather.status === 'loading' && <LoadingState message={`Buscando ${weather.query}...`} />}
+
+        {weather.status === 'selecting' && (
+          <LocationResults
+            cities={weather.cities}
+            onSelect={(city) => void weather.selectCity(city)}
+            titleRef={resultHeadingRef}
+          />
+        )}
 
         {weather.status === 'empty' && (
           <EmptyState

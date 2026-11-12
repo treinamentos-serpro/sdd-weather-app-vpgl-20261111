@@ -2,7 +2,7 @@ import { useEffect, useReducer, useRef } from 'react';
 import { getWeather, searchCities, WeatherServiceError } from '../services/weatherService';
 import type { City, WeatherData } from '../types/weather';
 
-export type WeatherStatus = 'idle' | 'loading' | 'success' | 'error' | 'empty';
+export type WeatherStatus = 'idle' | 'loading' | 'selecting' | 'success' | 'error' | 'empty';
 
 export interface UseWeatherResult {
   status: WeatherStatus;
@@ -29,7 +29,7 @@ type WeatherAction =
   | { type: 'searchStarted'; query: string }
   | { type: 'searchResolved'; cities: City[] }
   | { type: 'searchEmpty' }
-  | { type: 'weatherStarted' }
+  | { type: 'weatherStarted'; city: City }
   | { type: 'weatherResolved'; data: WeatherData }
   | { type: 'failed'; message: string; canRetry: boolean }
   | { type: 'retryAvailable' }
@@ -58,11 +58,18 @@ function weatherReducer(state: WeatherState, action: WeatherAction): WeatherStat
         canRetry: false,
       };
     case 'searchResolved':
-      return { ...state, cities: action.cities };
+      return { ...state, status: 'selecting', cities: action.cities };
     case 'searchEmpty':
       return { ...state, status: 'empty', data: null, cities: [], error: null, canRetry: false };
     case 'weatherStarted':
-      return { ...state, status: 'loading', data: null, error: null, canRetry: false };
+      return {
+        ...state,
+        status: 'loading',
+        data: null,
+        error: null,
+        query: action.city.name,
+        canRetry: false,
+      };
     case 'weatherResolved':
       return { ...state, status: 'success', data: action.data, error: null, canRetry: false };
     case 'failed':
@@ -175,7 +182,7 @@ export default function useWeather(): UseWeatherResult {
     clearRetryTimer();
     const currentOperationId = ++operationId.current;
     lastOperation.current = { type: 'weather', city };
-    dispatch({ type: 'weatherStarted' });
+    dispatch({ type: 'weatherStarted', city });
 
     try {
       const data = await getWeather(city);
@@ -218,7 +225,6 @@ export default function useWeather(): UseWeatherResult {
       }
 
       dispatch({ type: 'searchResolved', cities });
-      await loadWeather(cities[0]);
     } catch (error) {
       if (currentOperationId !== operationId.current) {
         return;

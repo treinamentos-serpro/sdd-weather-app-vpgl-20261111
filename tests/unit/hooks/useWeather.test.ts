@@ -72,8 +72,9 @@ describe('useWeather', () => {
     expect(mockedGetWeather).not.toHaveBeenCalled();
   });
 
-  it('carrega o clima da primeira cidade retornada', async () => {
-    mockedSearchCities.mockResolvedValue([city, { ...city, id: '2', name: 'Outra cidade' }]);
+  it('aguarda a seleção de uma cidade antes de carregar o clima', async () => {
+    const anotherCity = { ...city, id: '2', name: 'Outra cidade' };
+    mockedSearchCities.mockResolvedValue([city, anotherCity]);
     mockedGetWeather.mockResolvedValue(weatherData);
     const { result } = renderHook(() => useWeather());
 
@@ -82,9 +83,16 @@ describe('useWeather', () => {
     });
 
     expect(mockedSearchCities).toHaveBeenCalledWith('São Paulo');
-    expect(mockedGetWeather).toHaveBeenCalledWith(city);
+    expect(mockedGetWeather).not.toHaveBeenCalled();
+    expect(result.current.status).toBe('selecting');
+    expect(result.current.cities).toEqual([city, anotherCity]);
+
+    await act(async () => {
+      await result.current.selectCity(anotherCity);
+    });
+
+    expect(mockedGetWeather).toHaveBeenCalledWith(anotherCity);
     expect(result.current.status).toBe('success');
-    expect(result.current.cities).toHaveLength(2);
     expect(result.current.data).toEqual(weatherData);
   });
 
@@ -97,6 +105,9 @@ describe('useWeather', () => {
 
     await act(async () => {
       await result.current.search('São Paulo');
+    });
+    await act(async () => {
+      await result.current.selectCity(city);
     });
 
     expect(result.current.status).toBe('error');
@@ -122,6 +133,9 @@ describe('useWeather', () => {
 
     await act(async () => {
       await result.current.search('São Paulo');
+    });
+    await act(async () => {
+      await result.current.selectCity(city);
     });
 
     expect(result.current.status).toBe('error');
@@ -152,6 +166,9 @@ describe('useWeather', () => {
 
     await act(async () => {
       await result.current.search('São Paulo');
+    });
+    await act(async () => {
+      await result.current.selectCity(city);
     });
 
     expect(result.current.status).toBe('error');
